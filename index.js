@@ -3,8 +3,11 @@ const { Boom } = require("@hapi/boom");
 const pino = require("pino");
 const Groq = require("groq-sdk");
 const fs = require("fs");
+const OpenAI = require("openai"); // Importation du module OpenAI
+const { exec } = require("child_process"); // Importation pour FFmpeg
 
 const groq = new Groq({ apiKey: "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" });
+const openai = new OpenAI({ apiKey: "YOUR_OPENAI_API_KEY" }); // REMPLACEZ PAR VOTRE CLÉ API OPENAI
 
 const readline = require("readline");
 const PhoneNumber = require("awesome-phonenumber");
@@ -26,6 +29,12 @@ let botEnabled = true;
 // Créer le dossier 'media' si il n'existe pas
 if (!fs.existsSync('./media')) {
     fs.mkdirSync('./media', { recursive: true });
+}
+
+// Fonction utilitaire pour encoder une image en base64
+function encodeImageToBase64(imagePath) {
+    const imageBuffer = fs.readFileSync(imagePath);
+    return imageBuffer.toString('base64');
 }
 
 async function connectToWhatsApp() {
@@ -91,16 +100,53 @@ async function connectToWhatsApp() {
             const mimetype = imageMessage.mimetype;
 
             console.log(`Image reçue avec légende : ${caption || 'Aucune'}`);
-            await sock.sendMessage(remoteJid, { text: "J'ai bien reçu votre image !" });
+            await sock.sendMessage(remoteJid, { text: "J'ai bien reçu votre image ! Laissez-moi l'analyser..." });
 
             try {
                 const buffer = await downloadMediaMessage(message, 'buffer');
                 const filePath = `./media/${message.key.id}.${mimetype.split('/')[1]}`;
                 fs.writeFileSync(filePath, buffer);
                 console.log(`Image téléchargée et sauvegardée : ${filePath}`);
+
+                // --- Appeler l'API de Vision par Ordinateur (Exemple avec OpenAI GPT-4o) ---
+                const base64Image = encodeImageToBase64(filePath);
+                const response = await openai.chat.completions.create({
+                    model: "gpt-4o",
+                    messages: [
+                        {
+                            role: "user",
+                            content: [
+                                { type: "text", text: "Décris cette image en détail." },
+                                { type: "image_url", image_url: { url: `data:${mimetype};base64,${base64Image}` } },
+                            ],
+                        },
+                    ],
+                });
+                const imageDescription = response.choices[0].message.content;
+
+                console.log(`Description de l'image : ${imageDescription}`);
+
+                // --- Envoyer la description à Groq et obtenir la réponse ---
+                const promptForGroq = `L'utilisateur a envoyé une image. Voici sa description : "${imageDescription}". Réponds de manière amicale à cette image.`;
+                const chatCompletion = await groq.chat.completions.create({
+                    messages: [
+                        {
+                            role: "system",
+                            content: "Tu es Moussa, un assistant amical. Tu réponds aux utilisateurs en te basant sur le contenu des images qu'ils partagent.",
+                        },
+                        {
+                            role: "user",
+                            content: promptForGroq,
+                        },
+                    ],
+                    model: "llama-3.3-70b-versatile",
+                });
+                const groqResponse = chatCompletion.choices[0]?.message?.content || "Désolé, je n'ai pas pu générer de réponse concernant cette image.";
+                await sock.sendMessage(remoteJid, { text: groqResponse });
+
             } catch (error) {
-                console.error("Erreur lors du téléchargement de l'image :", error);
-                await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du téléchargement de l'image." });
+                console.error("Erreur lors du traitement de l'image :", error);
+                await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du traitement de votre image." });
             }
 
         } else if (message.message?.videoMessage) {
@@ -109,16 +155,79 @@ async function connectToWhatsApp() {
             const mimetype = videoMessage.mimetype;
 
             console.log(`Vidéo reçue avec légende : ${caption || 'Aucune'}`);
-            await sock.sendMessage(remoteJid, { text: "J'ai bien reçu votre vidéo !" });
+            await sock.sendMessage(remoteJid, { text: "J'ai bien reçu votre vidéo ! Laissez-moi la regarder..." });
 
             try {
                 const buffer = await downloadMediaMessage(message, 'buffer');
-                const filePath = `./media/${message.key.id}.${mimetype.split('/')[1]}`;
-                fs.writeFileSync(filePath, buffer);
-                console.log(`Vidéo téléchargée et sauvegardée : ${filePath}`);
+                const videoPath = `./media/${message.key.id}.${mimetype.split('/')[1]}`;
+                fs.writeFileSync(videoPath, buffer);
+                console.log(`Vidéo téléchargée et sauvegardée : ${videoPath}`);
+
+                // --- Extraire les images clés avec FFmpeg ---
+                const outputDir = `./media/video_frames/${message.key.id}`;
+                if (!fs.existsSync(outputDir)) {
+                    fs.mkdirSync(outputDir, { recursive: true });
+                }
+                const command = `ffmpeg -i ${videoPath} -vf "fps=1/10" ${outputDir}/${message.key.id}-frame-%03d.png`;
+                
+                await new Promise((resolve, reject) => {
+                    exec(command, async (error, stdout, stderr) => {
+                        if (error) {
+                            console.error(`Erreur lors de l'extraction des images : ${error.message}`);
+                            reject(error);
+                            return;
+                        }
+                        console.log(`Images extraites pour la vidéo : ${videoPath}`);
+
+                        // --- Analyser les images clés et synthétiser ---
+                        const frameFiles = fs.readdirSync(outputDir).filter(file => file.startsWith(`${message.key.id}-frame-`));
+                        let videoDescriptions = [];
+
+                        for (const frameFile of frameFiles) {
+                            const framePath = `${outputDir}/${frameFile}`;
+                            const base64Frame = encodeImageToBase64(framePath);
+                            const frameResponse = await openai.chat.completions.create({
+                                model: "gpt-4o",
+                                messages: [
+                                    {
+                                        role: "user",
+                                        content: [
+                                            { type: "text", text: "Décris cette image en détail." },
+                                            { type: "image_url", image_url: { url: `data:image/png;base64,${base64Frame}` } },
+                                        ],
+                                    },
+                                ],
+                            });
+                            videoDescriptions.push(frameResponse.choices[0].message.content);
+                        }
+
+                        const videoSummary = `La vidéo contient les éléments suivants : ${videoDescriptions.join(" ")}`;
+                        console.log(`Résumé de la vidéo : ${videoSummary}`);
+
+                        // --- Envoyer le résumé à Groq et obtenir la réponse ---
+                        const promptForGroq = `L'utilisateur a envoyé une vidéo. Voici un résumé de son contenu : "${videoSummary}". Réponds de manière amicale à cette vidéo.`;
+                        const chatCompletion = await groq.chat.completions.create({
+                            messages: [
+                                {
+                                    role: "system",
+                                    content: "Tu es Moussa, un assistant amical. Tu réponds aux utilisateurs en te basant sur le contenu des vidéos qu'ils partagent.",
+                                },
+                                {
+                                    role: "user",
+                                    content: promptForGroq,
+                                },
+                            ],
+                            model: "llama-3.3-70b-versatile",
+                        });
+                        const groqResponse = chatCompletion.choices[0]?.message?.content || "Désolé, je n'ai pas pu générer de réponse concernant cette vidéo.";
+                        await sock.sendMessage(remoteJid, { text: groqResponse });
+                        resolve();
+                    });
+                });
+
             } catch (error) {
-                console.error("Erreur lors du téléchargement de la vidéo :", error);
-                await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du téléchargement de la vidéo." });
+                console.error("Erreur lors du traitement de la vidéo :", error);
+                await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du traitement de votre vidéo." });
             }
 
         } else if (message.message?.documentMessage) {
@@ -144,16 +253,43 @@ async function connectToWhatsApp() {
             const mimetype = audioMessage.mimetype;
 
             console.log(`Audio reçu (${mimetype})`);
-            await sock.sendMessage(remoteJid, { text: "J'ai bien reçu votre message audio !" });
+            await sock.sendMessage(remoteJid, { text: "J'ai bien reçu votre message audio. Laissez-moi l'écouter..." });
 
             try {
                 const buffer = await downloadMediaMessage(message, 'buffer');
                 const filePath = `./media/${message.key.id}.${mimetype.split('/')[1]}`;
                 fs.writeFileSync(filePath, buffer);
                 console.log(`Audio téléchargé et sauvegardé : ${filePath}`);
+
+                // --- Appeler l'API Speech-to-Text (Exemple avec OpenAI Whisper) ---
+                const transcription = await openai.audio.transcriptions.create({
+                    file: fs.createReadStream(filePath),
+                    model: "whisper-1",
+                });
+                const transcribedText = transcription.text;
+
+                console.log(`Transcription audio : ${transcribedText}`);
+
+                // --- Envoyer la transcription à Groq et obtenir la réponse ---
+                const chatCompletion = await groq.chat.completions.create({
+                    messages: [
+                        {
+                            role: "system",
+                            content: "Tu es Moussa, un assistant amical. Tu as transcrit un message vocal et tu dois y répondre intelligemment. Ne mentionne pas que c'était un message vocal, réponds comme si c'était du texte.",
+                        },
+                        {
+                            role: "user",
+                            content: transcribedText,
+                        },
+                    ],
+                    model: "llama-3.3-70b-versatile",
+                });
+                const groqResponse = chatCompletion.choices[0]?.message?.content || "Désolé, je n'ai pas pu générer de réponse à votre message vocal.";
+                await sock.sendMessage(remoteJid, { text: groqResponse });
+
             } catch (error) {
-                console.error("Erreur lors du téléchargement de l'audio :", error);
-                await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du téléchargement de l'audio." });
+                console.error("Erreur lors du traitement de l'audio :", error);
+                await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du traitement de votre message audio." });
             }
 
         } else if (text) {
