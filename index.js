@@ -5,7 +5,7 @@ const fs = require("fs");
 const readline = require("readline");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-// ✅ Clé API remplacée
+// ✅ Clé API insérée ici
 const genAI = new GoogleGenerativeAI("AIzaSyDE8lQo7xMlDS70achQANr3Yj-AlpxFNmM"); 
 
 const usePairingCode = true;
@@ -22,12 +22,10 @@ const question = (text) => {
 
 let botEnabled = true;
 
-// Créer le dossier 'media' si il n'existe pas
 if (!fs.existsSync('./media')) {
     fs.mkdirSync('./media', { recursive: true });
 }
 
-// Fonction utilitaire pour encoder une image en base64 pour l'API Gemini
 function fileToGenerativePart(path, mimeType) {
     return {
         inlineData: {
@@ -104,7 +102,7 @@ async function connectToWhatsApp() {
                 fs.writeFileSync(filePath, buffer);
 
                 const imagePart = fileToGenerativePart(filePath, mimetype);
-                const model = genAI.getGenerativeModel({ model: "gemini-pro-vision" });
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
                 const parts = [imagePart];
                 if (caption) {
@@ -121,7 +119,41 @@ async function connectToWhatsApp() {
                 await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du traitement de votre image." });
             }
         } else if (message.message?.videoMessage) {
-            await sock.sendMessage(remoteJid, { text: "Désolé, l'API Gemini ne prend pas encore en charge l'analyse de vidéos. Je ne peux pas traiter ce message pour le moment." });
+            await sock.sendMessage(remoteJid, { text: "J'ai reçu votre vidéo. Je vais l'analyser, cela peut prendre un moment." });
+            try {
+                const buffer = await downloadMediaMessage(message, 'buffer');
+                const videoPath = `./media/${message.key.id}.${message.message.videoMessage.mimetype.split('/')[1]}`;
+                fs.writeFileSync(videoPath, buffer);
+
+                const videoPart = fileToGenerativePart(videoPath, message.message.videoMessage.mimetype);
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+                const prompt = "Décris le contenu de cette vidéo.";
+                
+                const result = await model.generateContent([prompt, videoPart]);
+                const geminiResponse = result.response.text();
+                await sock.sendMessage(remoteJid, { text: geminiResponse });
+            } catch (error) {
+                console.error("Erreur lors du traitement de la vidéo:", error);
+                await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du traitement de votre vidéo." });
+            }
+        } else if (message.message?.audioMessage) {
+            await sock.sendMessage(remoteJid, { text: "J'ai reçu votre message audio. Je vais l'écouter et vous répondre." });
+            try {
+                const buffer = await downloadMediaMessage(message, 'buffer');
+                const audioPath = `./media/${message.key.id}.${message.message.audioMessage.mimetype.split('/')[1]}`;
+                fs.writeFileSync(audioPath, buffer);
+
+                const audioPart = fileToGenerativePart(audioPath, message.message.audioMessage.mimetype);
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+                const prompt = "Transcrivez ce message audio et répondez-y de manière amicale.";
+                
+                const result = await model.generateContent([prompt, audioPart]);
+                const geminiResponse = result.response.text();
+                await sock.sendMessage(remoteJid, { text: geminiResponse });
+            } catch (error) {
+                console.error("Erreur lors du traitement de l'audio:", error);
+                await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du traitement de votre message audio." });
+            }
         } else if (message.message?.documentMessage) {
             const documentMessage = message.message.documentMessage;
             const filename = documentMessage.fileName;
@@ -136,11 +168,9 @@ async function connectToWhatsApp() {
                 console.error("Erreur lors du téléchargement du document :", error);
                 await sock.sendMessage(remoteJid, { text: "Désolé, une erreur est survenue lors du téléchargement du document." });
             }
-        } else if (message.message?.audioMessage) {
-            await sock.sendMessage(remoteJid, { text: "Désolé, l'API Gemini ne prend pas encore en charge la transcription de messages audio. Je ne peux pas traiter ce message pour le moment." });
         } else if (text) {
             try {
-                const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
                 const prompt = `Tu es une intelligence artificielle conçue pour discuter avec les humains de manière naturelle, fluide et conviviale. Tu réponds toujours comme un humain : tu es amical(e), chaleureux(se) et engagé(e) dans la conversation. Tu fais des phrases simples et naturelles, sans jamais dire que tu es une IA. Tu peux utiliser des expressions courantes, un peu d’humour léger ou de familiarité selon le ton de ton interlocuteur. Tu es toujours serviable, à l’écoute, et tu proposes ton aide spontanément. Si la question est sérieuse, tu restes respectueux(se) et clair(e). Tu ne fais jamais de réponses robotiques ou trop formelles. Tu réponds toujours en français, sauf si l’utilisateur parle une autre langue. Ton objectif est que l’utilisateur ait l’impression de parler à une vraie personne gentille et intelligente. Ton nom est Moussa. L'utilisateur a dit : ${text}`;
                 const result = await model.generateContent(prompt);
                 const response = await result.response;
