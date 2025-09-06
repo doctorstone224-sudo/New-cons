@@ -3,11 +3,11 @@ const { Boom } = require("@hapi/boom");
 const pino = require("pino");
 const Groq = require("groq-sdk");
 const fs = require("fs");
-const OpenAI = require("openai"); // Importation du module OpenAI
-const { exec } = require("child_process"); // Importation pour FFmpeg
+// const OpenAI = require("openai"); // Retiré: Utilisation d'un service externe pour la description d'image/audio/vidéo
+// const { exec } = require("child_process"); // Retiré: FFmpeg non utilisé directement ici
 
 const groq = new Groq({ apiKey: "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" });
-const openai = new OpenAI({ apiKey: "YOUR_OPENAI_API_KEY" }); // REMPLACEZ PAR VOTRE CLÉ API OPENAI
+// const openai = new OpenAI({ ... }); // Retiré: Utilisation d'un service externe pour la description d'image/audio/vidéo
 
 const readline = require("readline");
 const PhoneNumber = require("awesome-phonenumber");
@@ -31,7 +31,7 @@ if (!fs.existsSync('./media')) {
     fs.mkdirSync('./media', { recursive: true });
 }
 
-// Fonction utilitaire pour encoder une image en base64
+// Fonction utilitaire pour encoder une image en base64 (maintenue si un service externe l'exige)
 function encodeImageToBase64(imagePath) {
     const imageBuffer = fs.readFileSync(imagePath);
     return imageBuffer.toString('base64');
@@ -108,23 +108,13 @@ async function connectToWhatsApp() {
                 fs.writeFileSync(filePath, buffer);
                 console.log(`Image téléchargée et sauvegardée : ${filePath}`);
 
-                // --- Appeler l'API de Vision par Ordinateur (Exemple avec OpenAI GPT-4o) ---
-                const base64Image = encodeImageToBase64(filePath);
-                const response = await openai.chat.completions.create({
-                    model: "gpt-4o",
-                    messages: [
-                        {
-                            role: "user",
-                            content: [
-                                { type: "text", text: "Décris cette image en détail." },
-                                { type: "image_url", image_url: { url: `data:${mimetype};base64,${base64Image}` } },
-                            ],
-                        },
-                    ],
-                });
-                const imageDescription = response.choices[0].message.content;
+                // --- IMPORTANT : Ici, vous devez intégrer votre service externe de vision par ordinateur ---
+                // Ce service prendra 'filePath' (ou 'buffer') et renverra une description textuelle de l'image.
+                // Exemple: const imageDescription = await yourExternalVisionService.analyzeImage(filePath);
+                // Pour l'instant, nous utilisons une simulation:
+                const imageDescription = "L'utilisateur a envoyé une image. Décrivez ici le contenu de l'image en texte, par exemple: 'une photo d'un chat noir dormant sur un canapé'.";
 
-                console.log(`Description de l'image : ${imageDescription}`);
+                console.log(`Description de l'image (simulée) : ${imageDescription}`);
 
                 // --- Envoyer la description à Groq et obtenir la réponse ---
                 const promptForGroq = `L'utilisateur a envoyé une image. Voici sa description : "${imageDescription}". Réponds de manière amicale à cette image.`;
@@ -163,67 +153,31 @@ async function connectToWhatsApp() {
                 fs.writeFileSync(videoPath, buffer);
                 console.log(`Vidéo téléchargée et sauvegardée : ${videoPath}`);
 
-                // --- Extraire les images clés avec FFmpeg ---
-                const outputDir = `./media/video_frames/${message.key.id}`;
-                if (!fs.existsSync(outputDir)) {
-                    fs.mkdirSync(outputDir, { recursive: true });
-                }
-                const command = `ffmpeg -i ${videoPath} -vf "fps=1/10" ${outputDir}/${message.key.id}-frame-%03d.png`;
-                
-                await new Promise((resolve, reject) => {
-                    exec(command, async (error, stdout, stderr) => {
-                        if (error) {
-                            console.error(`Erreur lors de l'extraction des images : ${error.message}`);
-                            reject(error);
-                            return;
-                        }
-                        console.log(`Images extraites pour la vidéo : ${videoPath}`);
+                // --- IMPORTANT : Ici, vous devez intégrer votre service externe d'analyse vidéo ---
+                // Ce service prendra 'videoPath' (ou 'buffer') et renverra un résumé textuel de la vidéo.
+                // Exemple: const videoSummary = await yourExternalVideoService.analyzeVideo(videoPath);
+                // Pour l'instant, nous utilisons une simulation:
+                const videoSummary = "L'utilisateur a envoyé une vidéo. Décrivez ici le contenu de la vidéo en texte, par exemple: 'une courte vidéo d'un coucher de soleil sur la plage'.";
 
-                        // --- Analyser les images clés et synthétiser ---
-                        const frameFiles = fs.readdirSync(outputDir).filter(file => file.startsWith(`${message.key.id}-frame-`));
-                        let videoDescriptions = [];
+                console.log(`Résumé de la vidéo (simulé) : ${videoSummary}`);
 
-                        for (const frameFile of frameFiles) {
-                            const framePath = `${outputDir}/${frameFile}`;
-                            const base64Frame = encodeImageToBase64(framePath);
-                            const frameResponse = await openai.chat.completions.create({
-                                model: "gpt-4o",
-                                messages: [
-                                    {
-                                        role: "user",
-                                        content: [
-                                            { type: "text", text: "Décris cette image en détail." },
-                                            { type: "image_url", image_url: { url: `data:image/png;base64,${base64Frame}` } },
-                                        ],
-                                    },
-                                ],
-                            });
-                            videoDescriptions.push(frameResponse.choices[0].message.content);
-                        }
-
-                        const videoSummary = `La vidéo contient les éléments suivants : ${videoDescriptions.join(" ")}`;
-                        console.log(`Résumé de la vidéo : ${videoSummary}`);
-
-                        // --- Envoyer le résumé à Groq et obtenir la réponse ---
-                        const promptForGroq = `L'utilisateur a envoyé une vidéo. Voici un résumé de son contenu : "${videoSummary}". Réponds de manière amicale à cette vidéo.`;
-                        const chatCompletion = await groq.chat.completions.create({
-                            messages: [
-                                {
-                                    role: "system",
-                                    content: "Tu es Moussa, un assistant amical. Tu réponds aux utilisateurs en te basant sur le contenu des vidéos qu'ils partagent.",
-                                },
-                                {
-                                    role: "user",
-                                    content: promptForGroq,
-                                },
-                            ],
-                            model: "llama-3.3-70b-versatile",
-                        });
-                        const groqResponse = chatCompletion.choices[0]?.message?.content || "Désolé, je n'ai pas pu générer de réponse concernant cette vidéo.";
-                        await sock.sendMessage(remoteJid, { text: groqResponse });
-                        resolve();
-                    });
+                // --- Envoyer le résumé à Groq et obtenir la réponse ---
+                const promptForGroq = `L'utilisateur a envoyé une vidéo. Voici un résumé de son contenu : "${videoSummary}". Réponds de manière amicale à cette vidéo.`;
+                const chatCompletion = await groq.chat.completions.create({
+                    messages: [
+                        {
+                            role: "system",
+                            content: "Tu es Moussa, un assistant amical. Tu réponds aux utilisateurs en te basant sur le contenu des vidéos qu'ils partagent.",
+                        },
+                        {
+                            role: "user",
+                            content: promptForGroq,
+                        },
+                    ],
+                    model: "llama-3.3-70b-versatile",
                 });
+                const groqResponse = chatCompletion.choices[0]?.message?.content || "Désolé, je n'ai pas pu générer de réponse concernant cette vidéo.";
+                await sock.sendMessage(remoteJid, { text: groqResponse });
 
             } catch (error) {
                 console.error("Erreur lors du traitement de la vidéo :", error);
@@ -261,14 +215,13 @@ async function connectToWhatsApp() {
                 fs.writeFileSync(filePath, buffer);
                 console.log(`Audio téléchargé et sauvegardé : ${filePath}`);
 
-                // --- Appeler l'API Speech-to-Text (Exemple avec OpenAI Whisper) ---
-                const transcription = await openai.audio.transcriptions.create({
-                    file: fs.createReadStream(filePath),
-                    model: "whisper-1",
-                });
-                const transcribedText = transcription.text;
+                // --- IMPORTANT : Ici, vous devez intégrer votre service externe de Speech-to-Text ---
+                // Ce service prendra 'filePath' (ou 'buffer') et renverra la transcription textuelle de l'audio.
+                // Exemple: const transcribedText = await yourExternalSpeechToTextService.transcribeAudio(filePath);
+                // Pour l'instant, nous utilisons une simulation:
+                const transcribedText = "L'utilisateur a envoyé un message vocal. Transcrivez ici le contenu vocal en texte, par exemple: 'Bonjour, comment allez-vous ?'.";
 
-                console.log(`Transcription audio : ${transcribedText}`);
+                console.log(`Transcription audio (simulée) : ${transcribedText}`);
 
                 // --- Envoyer la transcription à Groq et obtenir la réponse ---
                 const chatCompletion = await groq.chat.completions.create({
